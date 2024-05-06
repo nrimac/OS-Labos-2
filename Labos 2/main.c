@@ -6,13 +6,17 @@
 #include <sys/wait.h>
 #include <string.h>
 #include <termios.h>
+#include <stdbool.h>
+
+#define MAX_NUMBER_OF_PROCESSES 100
 
 struct sigaction prije;
+int procces[MAX_NUMBER_OF_PROCESSES] = {0};
+int procces_counter = 0;
 
 void obradi_dogadjaj(int sig)
 {
 	printf("\n[signal SIGINT] proces %d primio signal %d\n", (int) getpid(), sig);
-	//proslijedi ga ako se program izvodi u prvom planu
 }
 
 void obradi_signal_zavrsio_neki_proces_dijete(int id)
@@ -21,9 +25,17 @@ void obradi_signal_zavrsio_neki_proces_dijete(int id)
 	pid_t pid_zavrsio = waitpid(-1, NULL, WNOHANG); //ne čeka
 	if (pid_zavrsio > 0)
 		if (kill(pid_zavrsio, 0) == -1) //možda je samo promijenio stanje ili je bas završio
-			printf("\n[roditelj %d - SIGCHLD + waitpid] dijete %d zavrsilo s radom\n", (int) getpid(), pid_zavrsio);
-	//else
-		//printf("\n[roditelj %d - SIGCHLD + waitpid] waitpid ne daje informaciju\n", (int) getpid());
+			printf("\nProgram %d zavrsio s radom\n", pid_zavrsio);
+
+	for (int i = 0; i < MAX_NUMBER_OF_PROCESSES; i++)
+	{
+		if (pid_zavrsio == procces[i])
+		{
+			procces[i] = 0;
+			procces_counter--;
+			break;
+		}
+	}
 }
 
 
@@ -56,7 +68,7 @@ int main()
 	act.sa_handler = obradi_dogadjaj;
 	sigemptyset(&act.sa_mask);
 	act.sa_flags = 0;
-	//sigaction(SIGINT, &act, &prije);
+	sigaction(SIGINT, &act, &prije);
 	act.sa_handler = obradi_signal_zavrsio_neki_proces_dijete;
 	sigaction(SIGCHLD, &act, NULL);
 	act.sa_handler = SIG_IGN;
@@ -66,7 +78,7 @@ int main()
 	tcgetattr(STDIN_FILENO, &shell_term_settings);
 
 	//uzmi natrag kontrolu nad terminalom
-	//tcsetpgrp(STDIN_FILENO, getpgid(0));
+	tcsetpgrp(STDIN_FILENO, getpgid(0));
 
 	size_t vel_buf = 128;
 	char buffer[vel_buf];
@@ -102,42 +114,73 @@ int main()
 					}
 					chdir(path);
 					free(path);
+				} else {
+					perror("Whoops, something went wrong\n");
 				}
 				continue;
 			}
 
 			//if argv = exit
 			if (strcmp(argv[0], "exit") == 0) {
+				for(int i = 0; i < procces_counter; i++) {
+					if(procces[i] != 0) {
+						printf("Gasim proces %d\n", procces[i]);
+						kill(procces[i], SIGKILL);
+					}
+				}
+				printf("Exiting...\n");
 				break;
 			}
 
-			//if argv = kill
-			if (!strcmp(argv[0], "kill") && argc == 3)
-			{
-				kill(atoi(argv[2]), atoi(argv[1]));
-			}
-
 			//if argv = ps
-			if (!strcmp(argv[0], "ps") && argc == 1)
+			if (strcmp(argv[0], "ps") == 0 && argc == 1)
 			{
-				system("ps");
+				printf("%d aktivnih procesa\n", procces_counter);
+				if (procces_counter == 0) continue;
+				printf("PID\n");
+				for(int i = 0; i < MAX_NUMBER_OF_PROCESSES; i++) {
+					if(procces[i] != 0) {
+						printf("%d\n", procces[i]);
+					}
+				}
+				continue;
 			}
 
-			pid_novi = pokreni_program(argv, 0);
+			//if argv = kill
+			if (strcmp(argv[0], "kill") == 0 && argc == 3)
+			{
+				bool izbacen = false;
+				for (int i = 0; i < MAX_NUMBER_OF_PROCESSES; i++) {
+					if (atoi(argv[2]) == procces[i]) {
+						kill((pid_t)atoi(argv[2]), atoi(argv[1]));
+						izbacen = true;
+						break;
+					}
+				}
+				if (!izbacen) printf("Zadani proces nije pokrenut!\n");
+			}
 
+			//if argv = pozadinski proces
+			if(strcmp(argv[argc - 1], "&") == 0) {
+				argv[argc - 1] = NULL;
+				pid_novi = pokreni_program(argv, 1);
+				procces[procces_counter] = pid_novi;
+				procces_counter++;
+				continue;
+			}
+
+			//if argv = obicni proces
+			pid_novi = pokreni_program(argv, 0);
 			pid_t pid_zavrsio;
 			do {
 				pid_zavrsio = waitpid(pid_novi, NULL, 0); //čekaj
 				if (pid_zavrsio > 0) {
-					if (kill(pid_novi, 0) == -1) { //nema ga više? ili samo mijenja stanje
-						printf("[roditelj] dijete %d zavrsilo s radom\n", pid_zavrsio);
-
-						//vraćam terminal ljusci
+					if (kill(pid_novi, 0) == -1) {
 						tcsetpgrp(STDIN_FILENO, getpgid(0));
 						tcsetattr(STDIN_FILENO, 0, &shell_term_settings);
 					}
 					else {
-						pid_novi = (pid_t) 0; //nije gotov
+						pid_novi = (pid_t) 0;
 					}
 				}
 				else {
@@ -147,11 +190,8 @@ int main()
 			}
 			while(pid_zavrsio <= 0);
 		}
-		else {
-			//printf("[roditelj] neka greska pri unosu, vjerojatno dobio signal\n");
-		}
 	}
-	while(strncmp(buffer, "exit", 4) != 0);
+	while(strcmp(buffer, "exit") != 0);
 
 	return 0;
 }
